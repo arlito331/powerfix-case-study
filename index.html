@@ -356,7 +356,7 @@
       </div>
       <div class="result-actions">
         <button class="btn btn-green" onclick="showCase()">View Full Case Study ↓</button>
-        <button class="btn btn-ghost btn-sm" onclick="printCase()">Download PDF</button>
+        <button class="btn btn-ghost btn-sm" id="downloadBtn" onclick="downloadPdf()">Download Official PDF</button>
       </div>
     </section>
 
@@ -413,13 +413,11 @@
 
 <script>
 // ── Constants ──────────────────────────────────────────────────────────────
-const BOX_KG = 20, CONSUMPTION_KG_M2 = 60.6, CUT_MULTIPLIER = 8;
-const POSITION_DISCOUNT = 0.13, CONV_MIN = 105, PP_MIN = 3;
-const POTHOLE_M2 = BOX_KG / CONSUMPTION_KG_M2;
-const CUT_M2 = POTHOLE_M2 * CUT_MULTIPLIER;
-const SPEED = Math.round(CONV_MIN / PP_MIN);
+const BACKEND_URL = 'https://powerfix-case-study.onrender.com'; // ← update after Render deploy
 
 let currentData = null;
+let currentPdfB64 = null;
+let currentPdfName = null;
 let nextCase = 6;
 
 // ── Secret lock — double-click logo ───────────────────────────────────────
@@ -481,12 +479,6 @@ function switchTab(name) {
     document.getElementById('content-' + t).classList.toggle('active', t === name);
   });
   if (name === 'history') renderHistory();
-}
-
-// ── Math ───────────────────────────────────────────────────────────────────
-function compute(rate) {
-  const conv = CUT_M2 * rate, box = conv * (1 - POSITION_DISCOUNT);
-  return { convTotal: +conv.toFixed(2), boxPrice: +box.toFixed(2), savings: +(conv-box).toFixed(2), savingsPct: +((conv-box)/conv*100).toFixed(1) };
 }
 
 // ── Log ────────────────────────────────────────────────────────────────────
@@ -554,93 +546,48 @@ async function generate() {
   setStatus(`Researching ${territory}…`, 'running');
 
   log(`▸ Case Study #${caseNum} · ${territory}`, 'lhd');
-  log('  Calling Claude claude-opus-4-8 + web_search…');
-
-  const prompt = `You are a research assistant for PowerFix. Research these three things for **${territory}** and return ONLY valid JSON (no markdown, no prose).
-
-1. Find a real government hot-asphalt (asfalto caliente) road-repair contract in ${territory} with a unit price in local-currency/m2 or $/m2. Prefer 2023-2026.
-
-2. Find the official FX rate (local currency per 1 USD) from the territory's central bank.
-
-3. Find a social-media post or news article showing government pothole repair crews in ${territory}.
-
-Return EXACTLY this JSON:
-{
-  "territory": "${territory}",
-  "currency_code": "<local symbol>",
-  "gov_rate_per_m2_usd": <number>,
-  "gov_rate_per_m2_local": <number or null>,
-  "method_label": "ASFALTO CALIENTE",
-  "location_line": "<City · contract description · year>",
-  "primary_source": {"label": "<publisher>", "url": "<URL or null>", "detail": "<contract identifier>"},
-  "cross_checks": [{"label": "<name>", "url": "<URL>", "detail": "<description>"}],
-  "fx_local_per_usd": <number>,
-  "fx_source": {"label": "<institution>", "url": "<URL>", "detail": "<short note>"},
-  "social_media": {"label": "<source>", "url": "<URL or null>", "detail": "<what it shows>"},
-  "confidence": "<high|medium|low>",
-  "notes": "<caveats>"
-}`;
+  log('  Calling backend: research + render real PDF…');
+  log('  (cold start can take up to ~50s on Render free tier)');
 
   try {
-    const res = await fetch('https://api.anthropic.com/v1/messages', {
+    const res = await fetch(`${BACKEND_URL}/api/generate`, {
       method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'x-api-key': key,
-        'anthropic-version': '2023-06-01',
-        'anthropic-beta': 'interleaved-thinking-2025-05-14',
-        'anthropic-dangerous-direct-browser-access': 'true',
-      },
-      body: JSON.stringify({
-        model: 'claude-opus-4-8',
-        max_tokens: 4096,
-        thinking: { type: 'adaptive' },
-        tools: [{ type: 'web_search_20260209', name: 'web_search' }],
-        messages: [{ role: 'user', content: prompt }],
-      }),
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ territory, caseNum, apiKey: key }),
     });
 
-    if (!res.ok) { const e = await res.json().catch(()=>({})); throw new Error(e.error?.message || `HTTP ${res.status}`); }
-    const msg = await res.json();
+    const payload = await res.json().catch(() => ({}));
+    if (!res.ok) throw new Error(payload.error || `HTTP ${res.status}`);
 
-    const searches = msg.content.filter(b => b.type === 'tool_use').length;
-    if (searches) log(`  Web searches: ${searches}`);
+    const { research: data, math, caseNum: confirmedCaseNum, filename, pdf_base64 } = payload;
 
-    let raw = msg.content.filter(b => b.type === 'text').map(b => b.text).join('').trim();
-    raw = raw.replace(/^```[a-z]*\n?/,'').replace(/\n?```$/,'').trim();
+    currentData = { data, math, caseNum: confirmedCaseNum };
+    currentPdfB64 = pdf_base64;
+    currentPdfName = filename;
+    nextCase = confirmedCaseNum + 1;
 
-    let data;
-    try { data = JSON.parse(raw); }
-    catch { const m = raw.match(/\{[\s\S]+\}/); if (m) data = JSON.parse(m[0]); else throw new Error('Could not parse response.'); }
+    log(''); log(`  Gov rate   : US$${math.gov_rate_per_m2_usd}/m²`, 'lval');
+    log(`  Conv total : US$${math.conventional_total_usd}`, 'lval');
+    log(`  PP box     : US$${math.powerpatch_box_usd}  (−13%)`, 'lval');
+    log(`  Savings    : US$${math.savings_usd}  (${math.savings_pct}%)`, 'lval');
+    log(`  Speed      : ${math.speed_multiple}× faster`, 'lval');
+    log(''); log('  ✓ Real PDF rendered.', 'lok');
 
-    if (!data.gov_rate_per_m2_usd) throw new Error('No $/m² rate found. ' + (data.notes || ''));
-
-    const math = compute(data.gov_rate_per_m2_usd);
-    currentData = { data, math, caseNum };
-    nextCase = caseNum + 1;
-
-    log(''); log(`  Gov rate   : US$${data.gov_rate_per_m2_usd}/m²`, 'lval');
-    log(`  Conv total : US$${math.convTotal}`, 'lval');
-    log(`  PP box     : US$${math.boxPrice}  (−13%)`, 'lval');
-    log(`  Savings    : US$${math.savings}  (${math.savingsPct}%)`, 'lval');
-    log(`  Speed      : ${SPEED}× faster`, 'lval');
-    log(''); log('  ✓ Case study ready.', 'lok');
-
-    document.getElementById('rRate').textContent = `US$${data.gov_rate_per_m2_usd.toFixed(2)}`;
-    document.getElementById('rConv').textContent = `US$${math.convTotal.toFixed(2)}`;
-    document.getElementById('rBox').textContent  = `US$${math.boxPrice.toFixed(2)}`;
-    document.getElementById('rSave').textContent = `US$${math.savings.toFixed(2)} (${math.savingsPct}%)`;
+    document.getElementById('rRate').textContent = `US$${math.gov_rate_per_m2_usd.toFixed(2)}`;
+    document.getElementById('rConv').textContent = `US$${math.conventional_total_usd.toFixed(2)}`;
+    document.getElementById('rBox').textContent  = `US$${math.powerpatch_box_usd.toFixed(2)}`;
+    document.getElementById('rSave').textContent = `US$${math.savings_usd.toFixed(2)} (${math.savings_pct}%)`;
     document.getElementById('resultSection').style.display = 'block';
     setStatus('✓ Case study ready.', 'done');
 
     // Save to history
     saveToHistory({
-      caseNum, territory: data.territory,
-      govRate: data.gov_rate_per_m2_usd.toFixed(2),
-      convTotal: math.convTotal.toFixed(2),
-      boxPrice: math.boxPrice.toFixed(2),
-      savings: math.savings.toFixed(2),
-      savingsPct: math.savingsPct,
+      caseNum: confirmedCaseNum, territory: data.territory,
+      govRate: math.gov_rate_per_m2_usd.toFixed(2),
+      convTotal: math.conventional_total_usd.toFixed(2),
+      boxPrice: math.powerpatch_box_usd.toFixed(2),
+      savings: math.savings_usd.toFixed(2),
+      savingsPct: math.savings_pct,
       confidence: data.confidence || 'medium',
       date: new Date().toLocaleDateString('en-US', { month:'short', day:'numeric', year:'numeric' }),
     });
@@ -654,6 +601,19 @@ Return EXACTLY this JSON:
   }
 }
 
+function downloadPdf() {
+  if (!currentPdfB64) { alert('Generate a case study first.'); return; }
+  const bytes = atob(currentPdfB64);
+  const arr = new Uint8Array(bytes.length);
+  for (let i = 0; i < bytes.length; i++) arr[i] = bytes.charCodeAt(i);
+  const blob = new Blob([arr], { type: 'application/pdf' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url; a.download = currentPdfName || 'PowerFix_CaseStudy.pdf';
+  document.body.appendChild(a); a.click(); document.body.removeChild(a);
+  URL.revokeObjectURL(url);
+}
+
 // ── Show / print ───────────────────────────────────────────────────────────
 function showCase() {
   if (!currentData) return;
@@ -662,18 +622,18 @@ function showCase() {
   document.getElementById('cCountry').textContent = data.territory;
   document.getElementById('cLoc').textContent     = data.location_line;
   document.getElementById('cMethod').textContent  = data.method_label || 'ASFALTO CALIENTE';
-  document.getElementById('cConv').textContent    = `US$${math.convTotal.toFixed(2)}`;
-  document.getElementById('cConvSub').textContent = `Cut zone: ${CUT_M2.toFixed(2)} m² × US$${data.gov_rate_per_m2_usd.toFixed(2)}/m²`;
-  document.getElementById('cBox').textContent     = `US$${math.boxPrice.toFixed(2)}`;
-  document.getElementById('cSave').textContent    = `US$${math.savings.toFixed(2)}`;
-  document.getElementById('cSpeed').textContent   = `${SPEED}× faster · ~3 min vs ~1h 45min`;
+  document.getElementById('cConv').textContent    = `US$${math.conventional_total_usd.toFixed(2)}`;
+  document.getElementById('cConvSub').textContent = `Cut zone: ${math.cut_zone_m2.toFixed(2)} m² × US$${math.gov_rate_per_m2_usd.toFixed(2)}/m²`;
+  document.getElementById('cBox').textContent     = `US$${math.powerpatch_box_usd.toFixed(2)}`;
+  document.getElementById('cSave').textContent    = `US$${math.savings_usd.toFixed(2)}`;
+  document.getElementById('cSpeed').textContent   = `${math.speed_multiple}× faster · ~3 min vs ~1h 45min`;
 
   const srcs = [data.primary_source, data.fx_source, ...(data.cross_checks||[])].filter(Boolean);
   document.getElementById('cSources').innerHTML = srcs.map(s =>
     `<div class="src">${s.url ? `<a href="${s.url}" target="_blank">${s.label}</a>` : `<b>${s.label}</b>`} — ${s.detail}</div>`
   ).join('');
 
-  let fn = `PowerPatch box price (US$${math.boxPrice.toFixed(2)}) back-calculated to hold 13% cheaper than conventional — positioning price, not a confirmed catalog price.`;
+  let fn = `PowerPatch box price (US$${math.powerpatch_box_usd.toFixed(2)}) back-calculated to hold 13% cheaper than conventional — positioning price, not a confirmed catalog price.`;
   if (data.social_media?.label) fn += ` Field footage: ${data.social_media.label}.`;
   if (data.notes) fn += ` ${data.notes}`;
   document.getElementById('cNote').textContent = fn;
@@ -681,7 +641,6 @@ function showCase() {
   document.getElementById('caseDisplay').style.display = 'block';
   document.getElementById('caseDisplay').scrollIntoView({ behavior: 'smooth' });
 }
-function printCase() { showCase(); setTimeout(() => window.print(), 300); }
 
 // ── Init ───────────────────────────────────────────────────────────────────
 document.addEventListener('DOMContentLoaded', () => {

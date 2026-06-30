@@ -47,12 +47,12 @@ def next_case_number() -> int:
     return max(nums) + 1 if nums else 6
 
 
-def research_territory(territory: str) -> dict:
+def research_territory(territory: str, api_key: str = None) -> dict:
     """
     Call Claude (opus-4-8, web_search) to research the three required data
     points for the given territory and return them as a structured dict.
     """
-    client = anthropic.Anthropic()
+    client = anthropic.Anthropic(api_key=api_key) if api_key else anthropic.Anthropic()
 
     prompt = f"""You are a research assistant for PowerFix, a pothole-repair product company.
 I need you to research the following three things for **{territory}** and return ONLY a valid JSON object (no prose, no markdown fences).
