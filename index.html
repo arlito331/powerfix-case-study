@@ -103,6 +103,12 @@
     font-size: 15px; outline: none; transition: border-color 0.15s;
   }
   input[type=text]:focus { border-color: var(--red); }
+  select {
+    width: 100%; background: #0a0a0a; border: 1px solid var(--border);
+    color: var(--text); border-radius: 4px; padding: 11px 14px;
+    font-size: 15px; outline: none; transition: border-color 0.15s;
+  }
+  select:focus { border-color: var(--red); }
   .hint { font-size: 10px; color: #333; margin-top: 4px; }
 
   /* ── Buttons ── */
@@ -260,13 +266,13 @@
 <header>
   <div class="brand" onclick="handleLogoClick()" title="double-click to lock">
     <div class="brand-logo">
-      <svg viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="2.5">
+      <svg viewBox="0 0 24 24" fill="#fff">
         <path d="M13 2L3 14h9l-1 8 10-12h-9l1-8z"/>
       </svg>
     </div>
     <div>
       <div class="brand-text">PowerFix · Case Study Generator</div>
-      <div class="brand-sub">Claude claude-opus-4-8 · web_search · Auto Research</div>
+      <div class="brand-sub">Claude Opus 4.8</div>
     </div>
   </div>
   <div class="header-right">
@@ -292,7 +298,33 @@
         <div class="form-row">
           <div class="field">
             <label for="territory">Territory</label>
-            <input type="text" id="territory" placeholder="e.g. Peru, Dominican Republic, Colombia…" />
+            <select id="territory">
+              <option value="">Select territory…</option>
+              <option>Argentina</option>
+              <option>Belize</option>
+              <option>Bolivia</option>
+              <option>Brazil</option>
+              <option>Chile</option>
+              <option>Colombia</option>
+              <option>Costa Rica</option>
+              <option>Cuba</option>
+              <option>Dominican Republic</option>
+              <option>Ecuador</option>
+              <option>El Salvador</option>
+              <option>Guatemala</option>
+              <option>Guyana</option>
+              <option>Haiti</option>
+              <option>Honduras</option>
+              <option>Mexico</option>
+              <option>Nicaragua</option>
+              <option>Panama</option>
+              <option>Paraguay</option>
+              <option>Peru</option>
+              <option>Puerto Rico</option>
+              <option>Suriname</option>
+              <option>Uruguay</option>
+              <option>Venezuela</option>
+            </select>
           </div>
           <div class="field-sm">
             <label for="caseNum">Case #</label>
@@ -656,7 +688,6 @@ document.addEventListener('DOMContentLoaded', () => {
   if (sessionStorage.getItem('pf_unlocked')) {
     document.getElementById('lockScreen').classList.add('hidden');
   }
-  document.getElementById('territory').addEventListener('keydown', e => { if (e.key === 'Enter') generate(); });
 });
 </script>
 </body>
