@@ -2,3 +2,5 @@ anthropic
 reportlab
 flask
 flask-cors
+requests
+Pillow

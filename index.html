@@ -514,17 +514,39 @@ function renderHistory() {
   if (!h.length) { el.innerHTML = '<div class="history-empty">No case studies generated yet.<br>Head to the Generate tab to create your first one.</div>'; return; }
   el.innerHTML = `<table class="history-table">
     <thead><tr><th>#</th><th>Territory</th><th>Gov Rate /m²</th><th>Conventional</th><th>PP Box</th><th>Savings</th><th>Confidence</th><th>Date</th></tr></thead>
-    <tbody>${h.map(r => `<tr>
+    <tbody>${h.map((r, i) => {
+      const m = r.math || {};
+      const govRate    = m.gov_rate_per_m2_usd       ?? r.govRate;
+      const convTotal  = m.conventional_total_usd    ?? r.convTotal;
+      const boxPrice   = m.powerpatch_box_usd         ?? r.boxPrice;
+      const savings    = m.savings_usd                ?? r.savings;
+      const savingsPct = m.savings_pct                ?? r.savingsPct;
+      return `<tr onclick="viewHistoryEntry(${i})" style="cursor:pointer;" title="Click to reopen this case study">
       <td style="color:var(--muted)">${r.caseNum}</td>
       <td class="h-territory">${r.territory}</td>
-      <td class="h-rate">US$${r.govRate}</td>
-      <td style="color:var(--text)">US$${r.convTotal}</td>
-      <td class="h-rate">US$${r.boxPrice}</td>
-      <td class="h-save">US$${r.savings} <span style="font-size:10px;color:var(--muted)">(${r.savingsPct}%)</span></td>
+      <td class="h-rate">US$${govRate}</td>
+      <td style="color:var(--text)">US$${convTotal}</td>
+      <td class="h-rate">US$${boxPrice}</td>
+      <td class="h-save">US$${savings} <span style="font-size:10px;color:var(--muted)">(${savingsPct}%)</span></td>
       <td><span class="h-conf ${r.confidence}">${r.confidence}</span></td>
       <td class="h-date">${r.date}</td>
-    </tr>`).join('')}</tbody>
+    </tr>`;
+    }).join('')}</tbody>
   </table>`;
+}
+
+function viewHistoryEntry(idx) {
+  const h = getHistory();
+  const r = h[idx];
+  if (!r || !r.data || !r.math) {
+    alert('This entry was saved before full detail tracking was added — only the summary numbers are available.');
+    return;
+  }
+  currentData = { data: r.data, math: r.math, caseNum: r.caseNum };
+  currentPdfB64 = null;
+  currentPdfName = null;
+  switchTab('generate');
+  showCase();
 }
 
 // ── Generate ───────────────────────────────────────────────────────────────
@@ -580,14 +602,10 @@ async function generate() {
     document.getElementById('resultSection').style.display = 'block';
     setStatus('✓ Case study ready.', 'done');
 
-    // Save to history
+    // Save to history (full data + math so the entry can be reopened later)
     saveToHistory({
       caseNum: confirmedCaseNum, territory: data.territory,
-      govRate: math.gov_rate_per_m2_usd.toFixed(2),
-      convTotal: math.conventional_total_usd.toFixed(2),
-      boxPrice: math.powerpatch_box_usd.toFixed(2),
-      savings: math.savings_usd.toFixed(2),
-      savingsPct: math.savings_pct,
+      data, math,
       confidence: data.confidence || 'medium',
       date: new Date().toLocaleDateString('en-US', { month:'short', day:'numeric', year:'numeric' }),
     });

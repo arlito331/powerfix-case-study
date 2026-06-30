@@ -72,6 +72,11 @@ Find a real social-media post, YouTube video, or news article that shows governm
 - Ideal sources: Twitter/X, Instagram, YouTube, TikTok, local news.
 - Record the source label (e.g. "@municapital" or "La Prensa"), the URL, and a one-line description.
 
+## Task 4 — Before/after photos of a real pothole repair
+Try to find a real BEFORE photo (the pothole, unrepaired) and AFTER photo (same pothole, repaired with conventional hot asphalt) from {territory} — ideally from the same Instagram post, news article, or municipal social account as Task 3.
+- Only record an image URL if it is a DIRECT image file link (ends in .jpg/.jpeg/.png/.webp, or is a CDN-hosted image URL that loads as an image, not an Instagram post page URL). Instagram post pages (instagram.com/p/...) are NOT direct image links — only use them if you can resolve the actual underlying image CDN URL (e.g. from an embedded preview, a news article that re-hosts the photo, or an open-graph image meta tag).
+- If you cannot find direct-loadable image URLs for both before and after, set both fields to null — do not guess or fabricate a URL.
+
 ## Output format (return EXACTLY this JSON, no other text):
 {{
   "territory": "{territory}",
@@ -98,6 +103,12 @@ Find a real social-media post, YouTube video, or news article that shows governm
     "label": "<source label>",
     "url": "<URL or null>",
     "detail": "<one-line description of what the footage shows>"
+  }},
+  "before_after_photos": {{
+    "before_image_url": "<direct image URL of the unrepaired pothole, or null>",
+    "after_image_url": "<direct image URL of the repaired pothole, or null>",
+    "source_label": "<e.g. '@municapital Instagram'>",
+    "source_url": "<post or article URL, or null>"
   }},
   "confidence": "<high|medium|low>",
   "notes": "<any caveats about data quality or what was not found>"
@@ -197,9 +208,48 @@ def build_case_inputs(data: dict, case_number: int) -> CaseInputs:
         box_price_usd=None,  # always auto-position at 13% cheaper
         primary_source=make_source(data.get("primary_source", {})),
         cross_checks=cross_checks,
-        photos=[],  # no photos in automated mode
+        photos=[],  # filled in later by try_download_photos(), if found
         extra_footnote=extra,
     )
+
+
+def try_download_photos(data: dict, tmp_dir: str) -> list:
+    """
+    Best-effort download of the before/after photo URLs Claude found.
+    Returns a list of (path, tag, caption) tuples suitable for CaseInputs.photos,
+    or [] if no usable direct-image URLs were found or the download failed.
+    Instagram post pages are not directly downloadable — only direct CDN/image
+    URLs work, so this frequently comes back empty. That's expected.
+    """
+    import requests
+
+    info = data.get("before_after_photos") or {}
+    before_url = info.get("before_image_url")
+    after_url = info.get("after_image_url")
+    if not before_url or not after_url:
+        return []
+
+    targets = [
+        ("before", before_url, "PASO 1 · ANTES", "Bache real, sin reparar."),
+        ("after", after_url, "PASO 2 · DESPUÉS", "Mismo bache, reparación convencional completada."),
+    ]
+    try:
+        os.makedirs(tmp_dir, exist_ok=True)
+        photos = []
+        for label, url, tag, caption in targets:
+            resp = requests.get(url, timeout=10, headers={"User-Agent": "Mozilla/5.0"})
+            resp.raise_for_status()
+            ctype = resp.headers.get("Content-Type", "")
+            if "image" not in ctype:
+                return []  # not a real image URL — bail on both
+            ext = ".png" if "png" in ctype else ".jpg"
+            path = os.path.join(tmp_dir, f"{label}{ext}")
+            with open(path, "wb") as f:
+                f.write(resp.content)
+            photos.append((path, tag, caption))
+        return photos
+    except Exception:
+        return []
 
 
 # ---------------------------------------------------------------------------

@@ -23,7 +23,7 @@ from flask_cors import CORS
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
 
-from auto_case import research_territory, build_case_inputs, next_case_number
+from auto_case import research_territory, build_case_inputs, next_case_number, try_download_photos
 from powerfix_engine import compute
 from powerfix_render import render
 
@@ -52,6 +52,10 @@ def generate():
         research = research_territory(territory, api_key=api_key)
         case_number = int(case_num) if case_num else next_case_number()
         inp = build_case_inputs(research, case_number)
+
+        tmp_photo_dir = os.path.join(HERE, "output", "_tmp_photos")
+        inp.photos = try_download_photos(research, tmp_photo_dir)
+
         res = compute(inp)
 
         out_dir = os.path.join(HERE, "output")
