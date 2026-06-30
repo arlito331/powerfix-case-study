@@ -20,7 +20,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import urlparse, parse_qs
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-PORT = 5050
+PORT = int(os.environ.get("PORT", 5050))
 
 # ── In-memory job state (single-user local tool) ──────────────────────────
 JOB = {
@@ -290,7 +290,7 @@ def main():
         print("WARNING: ANTHROPIC_API_KEY is not set in this shell.")
         print("Run:  export ANTHROPIC_API_KEY='sk-ant-...'  before generating.\n")
 
-    server = ThreadingHTTPServer(("127.0.0.1", PORT), Handler)
+    server = ThreadingHTTPServer(("0.0.0.0", PORT), Handler)
     url = f"http://127.0.0.1:{PORT}"
     print(f"PowerFix web app running at {url}")
     print("Press Ctrl+C to stop.")
