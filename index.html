@@ -508,8 +508,8 @@ async function generate() {
   const territory = document.getElementById('territory').value.trim();
   if (!territory) { alert('Please enter a territory.'); return; }
   if (!sessionStorage.getItem('pf_unlocked')) { lock(); return; }
-  const key = ANTHROPIC_KEY;
-  if (!key) { alert('No API key found. Double-click the X to set it up.'); return; }
+  const key = getKey();
+  if (!key) { alert('No API key found. Double-click Fix twice to set it up.'); return; }
 
   const numInput = document.getElementById('caseNum').value.trim();
   const caseNum = numInput ? parseInt(numInput) : nextCase;
