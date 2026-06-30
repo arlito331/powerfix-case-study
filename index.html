@@ -4,6 +4,7 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>PowerFix · Case Study Generator</title>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
 <script>
   function getKey() { return localStorage.getItem('pf_k'); }
 </script>
@@ -413,12 +414,34 @@
 
 <script>
 // ── Constants ──────────────────────────────────────────────────────────────
-const BACKEND_URL = 'https://powerfix-case-study.onrender.com'; // ← update after Render deploy
+const BOX_KG = 20, CONSUMPTION_KG_M2 = 60.6, CUT_MULTIPLIER = 8;
+const POSITION_DISCOUNT = 0.13, CONV_MIN = 105, PP_MIN = 3;
 
 let currentData = null;
-let currentPdfB64 = null;
-let currentPdfName = null;
 let nextCase = 6;
+
+// ── Math (mirrors powerfix_engine.py exactly) ──────────────────────────────
+function compute(rate) {
+  const potholeM2 = BOX_KG / CONSUMPTION_KG_M2;
+  const cutM2 = potholeM2 * CUT_MULTIPLIER;
+  const convTotal = cutM2 * rate;
+  const boxPrice = convTotal * (1 - POSITION_DISCOUNT);
+  const savings = convTotal - boxPrice;
+  return {
+    pothole_m2:            +potholeM2.toFixed(2),
+    cut_zone_m2:           +cutM2.toFixed(2),
+    cut_multiplier:        CUT_MULTIPLIER,
+    footprint_expansion_pct: `+${(CUT_MULTIPLIER-1)*100}%`,
+    gov_rate_per_m2_usd:   +rate.toFixed(2),
+    conventional_total_usd:+convTotal.toFixed(2),
+    powerpatch_box_usd:    +boxPrice.toFixed(2),
+    savings_usd:           +savings.toFixed(2),
+    savings_pct:           +(savings/convTotal*100).toFixed(1),
+    speed_multiple:        Math.round(CONV_MIN/PP_MIN),
+    conv_time_label:       '~1H 45MIN',
+    pp_time_label:         '~3 MIN',
+  };
+}
 
 // ── Secret lock — double-click logo ───────────────────────────────────────
 let clickCount = 0, clickTimer = null;
@@ -543,8 +566,6 @@ function viewHistoryEntry(idx) {
     return;
   }
   currentData = { data: r.data, math: r.math, caseNum: r.caseNum };
-  currentPdfB64 = null;
-  currentPdfName = null;
   switchTab('generate');
   showCase();
 }
@@ -568,32 +589,84 @@ async function generate() {
   setStatus(`Researching ${territory}…`, 'running');
 
   log(`▸ Case Study #${caseNum} · ${territory}`, 'lhd');
-  log('  Calling backend: research + render real PDF…');
-  log('  (cold start can take up to ~50s on Render free tier)');
+  log('  Calling Claude Opus 4.8 + web_search…');
+
+  const prompt = `You are a research assistant for PowerFix. Research the following for **${territory}** and return ONLY valid JSON (no markdown, no prose).
+
+1. A real government hot-asphalt (asfalto caliente) road-repair contract with a unit price in $/m² or local-currency/m². Prefer 2023-2026.
+2. The official FX rate (local currency per 1 USD) from the territory's central bank.
+3. A social-media post or news article showing government pothole repair crews in ${territory} (Instagram, Twitter/X, YouTube, TikTok, or local news).
+4. A BEFORE photo (unrepaired pothole) and AFTER photo (same pothole, repaired with conventional asphalt) from ${territory}. Only record a before_image_url / after_image_url if it is a DIRECT image file link (ends in .jpg/.jpeg/.png/.webp or is a CDN image URL that loads directly as an image). Instagram post page URLs are NOT direct image links. Set to null if not found.
+
+Return EXACTLY this JSON:
+{
+  "territory": "${territory}",
+  "currency_code": "<local symbol>",
+  "gov_rate_per_m2_usd": <number>,
+  "gov_rate_per_m2_local": <number or null>,
+  "method_label": "ASFALTO CALIENTE",
+  "location_line": "<City · contract description · year>",
+  "primary_source": {"label":"<publisher>","url":"<URL or null>","detail":"<contract ID>"},
+  "cross_checks": [{"label":"<name>","url":"<URL>","detail":"<description>"}],
+  "fx_local_per_usd": <number>,
+  "fx_source": {"label":"<institution>","url":"<URL>","detail":"<short note>"},
+  "social_media": {"label":"<source>","url":"<URL or null>","detail":"<what it shows>"},
+  "before_after_photos": {
+    "before_image_url": "<direct image URL or null>",
+    "after_image_url": "<direct image URL or null>",
+    "source_label": "<e.g. @municapital Instagram>",
+    "source_url": "<post URL or null>"
+  },
+  "confidence": "<high|medium|low>",
+  "notes": "<caveats>"
+}`;
 
   try {
-    const res = await fetch(`${BACKEND_URL}/api/generate`, {
+    const res = await fetch('https://api.anthropic.com/v1/messages', {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ territory, caseNum, apiKey: key }),
+      headers: {
+        'Content-Type': 'application/json',
+        'x-api-key': key,
+        'anthropic-version': '2023-06-01',
+        'anthropic-beta': 'interleaved-thinking-2025-05-14',
+        'anthropic-dangerous-direct-browser-access': 'true',
+      },
+      body: JSON.stringify({
+        model: 'claude-opus-4-8',
+        max_tokens: 5000,
+        thinking: { type: 'adaptive' },
+        tools: [{ type: 'web_search_20260209', name: 'web_search' }],
+        messages: [{ role: 'user', content: prompt }],
+      }),
     });
 
-    const payload = await res.json().catch(() => ({}));
-    if (!res.ok) throw new Error(payload.error || `HTTP ${res.status}`);
+    if (!res.ok) { const e = await res.json().catch(()=>({})); throw new Error(e.error?.message || `HTTP ${res.status}`); }
+    const msg = await res.json();
 
-    const { research: data, math, caseNum: confirmedCaseNum, filename, pdf_base64 } = payload;
+    const searches = msg.content.filter(b => b.type === 'tool_use').length;
+    if (searches) log(`  Web searches: ${searches}`);
 
-    currentData = { data, math, caseNum: confirmedCaseNum };
-    currentPdfB64 = pdf_base64;
-    currentPdfName = filename;
-    nextCase = confirmedCaseNum + 1;
+    let raw = msg.content.filter(b => b.type === 'text').map(b => b.text).join('').trim();
+    raw = raw.replace(/^```[a-z]*\n?/,'').replace(/\n?```$/,'').trim();
 
+    let data;
+    try { data = JSON.parse(raw); }
+    catch { const m = raw.match(/\{[\s\S]+\}/); if (m) data = JSON.parse(m[0]); else throw new Error('Could not parse response — try again.'); }
+
+    if (!data.gov_rate_per_m2_usd) throw new Error('No $/m² rate found. ' + (data.notes || ''));
+
+    const math = compute(data.gov_rate_per_m2_usd);
+    currentData = { data, math, caseNum };
+    nextCase = caseNum + 1;
+
+    const photos = data.before_after_photos || {};
+    if (photos.source_label) log(`  Photos      : ${photos.source_label}`);
     log(''); log(`  Gov rate   : US$${math.gov_rate_per_m2_usd}/m²`, 'lval');
     log(`  Conv total : US$${math.conventional_total_usd}`, 'lval');
     log(`  PP box     : US$${math.powerpatch_box_usd}  (−13%)`, 'lval');
     log(`  Savings    : US$${math.savings_usd}  (${math.savings_pct}%)`, 'lval');
     log(`  Speed      : ${math.speed_multiple}× faster`, 'lval');
-    log(''); log('  ✓ Real PDF rendered.', 'lok');
+    log(''); log('  ✓ Ready — click Download Official PDF.', 'lok');
 
     document.getElementById('rRate').textContent = `US$${math.gov_rate_per_m2_usd.toFixed(2)}`;
     document.getElementById('rConv').textContent = `US$${math.conventional_total_usd.toFixed(2)}`;
@@ -602,9 +675,8 @@ async function generate() {
     document.getElementById('resultSection').style.display = 'block';
     setStatus('✓ Case study ready.', 'done');
 
-    // Save to history (full data + math so the entry can be reopened later)
     saveToHistory({
-      caseNum: confirmedCaseNum, territory: data.territory,
+      caseNum, territory: data.territory,
       data, math,
       confidence: data.confidence || 'medium',
       date: new Date().toLocaleDateString('en-US', { month:'short', day:'numeric', year:'numeric' }),
@@ -619,17 +691,124 @@ async function generate() {
   }
 }
 
+// ── PDF generation (jsPDF — matches PowerFix locked layout) ────────────────
 function downloadPdf() {
-  if (!currentPdfB64) { alert('Generate a case study first.'); return; }
-  const bytes = atob(currentPdfB64);
-  const arr = new Uint8Array(bytes.length);
-  for (let i = 0; i < bytes.length; i++) arr[i] = bytes.charCodeAt(i);
-  const blob = new Blob([arr], { type: 'application/pdf' });
-  const url = URL.createObjectURL(blob);
-  const a = document.createElement('a');
-  a.href = url; a.download = currentPdfName || 'PowerFix_CaseStudy.pdf';
-  document.body.appendChild(a); a.click(); document.body.removeChild(a);
-  URL.revokeObjectURL(url);
+  if (!currentData) { alert('Generate a case study first.'); return; }
+  const { data, math, caseNum } = currentData;
+  const { jsPDF } = window.jspdf;
+  const W = 792, H = 542, M = 26;
+  const doc = new jsPDF({ orientation: 'landscape', unit: 'pt', format: [W, H] });
+
+  // palette
+  const BG=[14,14,15], PANEL=[26,26,27], STR=[52,52,58];
+  const WHT=[244,243,241], GRY=[163,162,160], GRY2=[111,110,108];
+  const RED=[232,68,42], BLU=[63,127,224], GRN=[70,201,126], PCH=[255,230,223];
+
+  const f = (n) => n.toFixed(2);
+  const US = 'US$';
+
+  function bg()  { doc.setFillColor(...BG);  doc.rect(0,0,W,H,'F'); }
+  function fill(x,y,w,h,c) { doc.setFillColor(...c); doc.rect(x,y,w,h,'F'); }
+  function ln(x1,y1,x2,y2,c,lw=0.5) { doc.setDrawColor(...c); doc.setLineWidth(lw); doc.line(x1,y1,x2,y2); }
+  function txt(x,y,s,sz,c,style='normal',align='left',cs=0) {
+    doc.setFont('helvetica',style); doc.setFontSize(sz);
+    doc.setTextColor(...c); doc.text(String(s),x,y,{align,charSpace:cs});
+  }
+  function bolt(cx,cy,h) {
+    const s=h/14, pts=[[7,14],[3,7],[6,7],[4,0],[11,8],[7,8],[9,14]];
+    const abs=pts.map(([xx,yy])=>[cx+(xx-6)*s, cy-(yy-7)*s]);
+    const rel=[]; for(let i=1;i<abs.length;i++) rel.push([abs[i][0]-abs[i-1][0],abs[i][1]-abs[i-1][1]]);
+    doc.setFillColor(...RED); doc.lines(rel,abs[0][0],abs[0][1],[1,1],'F',true);
+  }
+  function header(title,sub,badge) {
+    bolt(M+6,28,20);
+    const hx=M+22;
+    txt(hx,26,'Power',16,WHT,'bold'); const pw=doc.getTextWidth('Power');
+    txt(hx+pw,26,'Fix',16,RED,'bold');
+    txt(hx,38,'R E P A I R .   R E I N V E N T E D .',5.5,GRY2,'normal','left',0);
+    txt(W/2,23,title,13,WHT,'bold','center');
+    txt(W/2,36,sub,7,GRY,'normal','center');
+    if(badge){ fill(W-M-118,14,118,28,RED); txt(W-M-59,31,badge,11,WHT,'bold','center'); }
+  }
+
+  // ── Page 1 ────────────────────────────────────────────────────────────────
+  bg();
+  header(`POWERPATCH — CASE STUDY #${caseNum}`, data.location_line||'', `${math.speed_multiple}× MÁS RÁPIDO`);
+
+  // stats row
+  const srY=47, srH=40, rateDisp=`${US}${f(math.gov_rate_per_m2_usd)}/m² *`;
+  const stats=[['BACHE REAL',`${f(math.pothole_m2)} m²`],[`ZONA DE CORTE (${Math.round(math.cut_multiplier)}×)`,`${f(math.cut_zone_m2)} m²`],['EXPANSIÓN DE HUELLA',math.footprint_expansion_pct],['POWERPATCH APLICADO','1 caja · 20 kg'],['TARIFA GOB. (TODO INCL.)',rateDisp]];
+  fill(M,srY,W-2*M,srH,PANEL);
+  doc.setDrawColor(...STR); doc.setLineWidth(0.8); doc.rect(M,srY,W-2*M,srH,'S');
+  const cw=(W-2*M)/stats.length;
+  stats.forEach(([lab,val],i)=>{
+    const x=M+i*cw; if(i>0) ln(x,srY+6,x,srY+srH-6,STR,0.8);
+    txt(x+10,srY+12,lab,5.5,GRY,'normal','left',0.4);
+    txt(x+10,srY+29,val,12,WHT,'bold');
+  });
+
+  // section label
+  const secY=srY+srH+11;
+  txt(M,secY,'C O M P A R A C I Ó N   D E   C O S T O   G U B E R N A M E N T A L   —   M I S M A   R E P A R A C I Ó N ,   D O S   M É T O D O S',5.8,GRY2,'normal','left',0);
+
+  // comparison columns
+  const colY=secY+7, colH=160, colG=8, colW=(W-2*M-colG)/2;
+  function col(x,acc,num,title,sub,rows,total,tl,cl) {
+    fill(x,colY,colW,colH,PANEL); fill(x,colY,colW,3,acc);
+    const px=x+16, py=colY+19;
+    txt(px,py,num,8,acc,'bold'); txt(px,py+13,title,13,WHT,'bold'); txt(px,py+25,sub,7,GRY,'normal');
+    let ry=py+43;
+    rows.forEach(([lab,val])=>{ txt(px,ry,lab,7,GRY,'normal'); txt(x+colW-14,ry,val,7,WHT,'bold','right'); ln(px,ry+4,x+colW-14,ry+4,STR,0.4); ry+=13; });
+    txt(px,ry+11,total,21,WHT,'bold');
+    txt(px,colY+colH-8,tl,7,acc,'bold'); txt(x+colW-14,colY+colH-8,cl,7,GRY,'normal','right');
+  }
+  col(M,RED,'01',data.method_label||'ASFALTO CALIENTE','Metodología observada — corte 8× del bache original',
+    [['Zona de reparación',`${f(math.cut_zone_m2)} m² (${Math.round(math.cut_multiplier)}× bache)`],['Tarifa (contrato gob., todo incl.)',rateDisp],['Cuadrilla','Cuadrilla completa + maquinaria']],
+    `${US}${f(math.conventional_total_usd)}`,math.conv_time_label,'CUADRILLA COMPLETA');
+  col(M+colW+colG,BLU,'02','POWERPATCH','Rellena solo el bache real — sin expandir · sin cortar',
+    [['Área rellenada',`${f(math.pothole_m2)} m² (bache real)`],['Material','1 caja · 20 kg'],['Precio/caja (posicionado, ver nota)',`${US}${f(math.powerpatch_box_usd)} *`],['Cuadrilla','2 personas · sin maquinaria']],
+    `${US}${f(math.powerpatch_box_usd)}`,math.pp_time_label,'2 PERSONAS');
+
+  // savings bar
+  const sbY=colY+colH+7, sbH=30;
+  fill(M,sbY,W-2*M,sbH,RED);
+  txt(M+14,sbY+12,`POWERPATCH   ${math.speed_multiple}× MÁS RÁPIDO`,12,WHT,'bold');
+  txt(M+14,sbY+24,'2 PERSONAS · ~3 MIN · SIN MAQUINARIA · SIN CIERRE DE VÍA',6,PCH,'normal','left',0.3);
+  txt(W-M-14,sbY+12,`${US}${f(math.powerpatch_box_usd)} / CAJA`,13,WHT,'bold','right');
+  txt(W-M-14,sbY+24,`vs ${US}${f(math.conventional_total_usd)} · ~1h 45min ${(data.method_label||'').toLowerCase()}`,6.5,PCH,'normal','right');
+
+  // savings stats
+  const ssLY=sbY+sbH+11;
+  txt(M,ssLY,'A H O R R O   V S   P O W E R P A T C H',6.5,WHT,'bold','left',0.3);
+  const ssY=ssLY+5, ssH=43;
+  fill(M,ssY,W-2*M,ssH,PANEL);
+  doc.setDrawColor(...STR); doc.setLineWidth(0.8); doc.rect(M,ssY,W-2*M,ssH,'S');
+  [[`${US}${Math.round(math.savings_usd)}`,`vs ${data.method_label||''} — todo incl.`,GRN],[`${Math.round(math.savings_pct)}%`,'más barato · todo incl.',GRN],[`${math.speed_multiple}×`,'más rápido que convencional',RED]].forEach(([big,sm,c],i)=>{
+    const sw=(W-2*M)/3, x=M+i*sw;
+    if(i>0) ln(x,ssY+6,x,ssY+ssH-6,STR,0.8);
+    txt(x+sw/2,ssY+20,big,18,c,'bold','center'); txt(x+sw/2,ssY+34,sm,6.5,GRY,'normal','center');
+  });
+
+  // feature callouts
+  const ftY=ssY+ssH+11, fw=(W-2*M)/3;
+  [['MINUTOS, NO HORAS','~3 min vs ~1h 45min de la cuadrilla convencional.'],['SIN MAQUINARIA','Equipo pesado y combustible — eliminados.'],['SIN CIERRE DE VÍA','La calle permanece abierta. Cero interrupción.']].forEach(([t,d],i)=>{
+    const x=M+i*fw; fill(x,ftY,2,23,RED);
+    txt(x+10,ftY+10,t,7.5,WHT,'bold'); txt(x+10,ftY+21,d,6.5,GRY,'normal');
+  });
+
+  // footnotes
+  const fnY=ftY+23+9;
+  ln(M,fnY,W-M,fnY,STR,0.5);
+  const ps=data.primary_source||{}, fx=data.fx_source||{};
+  const rateStr=`${US}${f(math.gov_rate_per_m2_usd)}/m²${data.gov_rate_per_m2_local?` (${data.currency_code}${f(data.gov_rate_per_m2_local)}/m²)`:''}`;
+  txt(M,fnY+10,`* Tarifa ${rateStr}, todo incluido — ${ps.detail||''}. Verificar: ${ps.label||''}`,6.5,GRY,'normal');
+  const cc=(data.cross_checks||[]).map(c=>`${c.detail} (${c.label})`).join(' · ');
+  txt(M,fnY+20,`Cross-checks: ${cc} · FX ${data.currency_code||''}${data.fx_local_per_usd||''}=${US}1 (${fx.label||''})`,6.5,GRY,'normal');
+  const fnNote=`Precio/caja PowerPatch (${US}${f(math.powerpatch_box_usd)}) calibrado para 13% más barato (posicionamiento, no precio de catálogo confirmado).${data.social_media?.label?' Fotos/vídeo: '+data.social_media.label+'.':''}${data.notes?' '+data.notes:''}`;
+  txt(M,fnY+30,fnNote,6.3,GRY2,'normal');
+
+  // save
+  doc.save(`PowerFix_CaseStudy${caseNum}_${(data.territory||'').replace(/ /g,'_')}.pdf`);
 }
 
 // ── Show / print ───────────────────────────────────────────────────────────
